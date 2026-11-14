@@ -177,7 +177,7 @@ const S = {
   data: null,            // {accounts, transactions, generated_at}
   cats: null,            // {income:[], expense:[]}
   rules: null, rulesSha: null,
-  overrides: {}, ovSha: null, catsSha: null,
+  overrides: {}, ovSha: null, catsSha: null, acctNames: {}, acctSha: null,
   month: (()=>{ const d=new Date(); return {y:d.getFullYear(), m:d.getMonth()}; })(),
   tab: "overview", txFilter: "all", q: "", syncState: "ok"
 };
@@ -253,21 +253,22 @@ async function loadAll({silent=false}={}){
   if (cached && !S.data){
     try{
       S.data = await decryptEnv(cached.env, S.cfg.pass);
-      S.cats = cached.cats; S.rules = cached.rules; S.overrides = cached.overrides||{};
+      S.cats = cached.cats; S.rules = cached.rules; S.overrides = cached.overrides||{}; S.acctNames = cached.acctNames||{};
       render();
     }catch(e){ /* wrong pass -> fall through */ }
   }
   // 2) network
   setSync("loading");
   try{
-    const [envTxt, cats, rules, ov] = await Promise.all([ghRaw("data.enc.json"), ghJson("categories.json"), ghJson("rules.json"), ghJson("overrides.json")]);
+    const [envTxt, cats, rules, ov, an] = await Promise.all([ghRaw("data.enc.json"), ghJson("categories.json"), ghJson("rules.json"), ghJson("overrides.json"), ghJson("accounts.json")]);
     S.cats = cats.json || {income:[],expense:[]}; S.catsSha = cats.sha;
     S.rules = rules.json || {rules:[]}; S.rulesSha = rules.sha;
     S.overrides = ov.json || {}; S.ovSha = ov.sha;
+    S.acctNames = an.json || {}; S.acctSha = an.sha;
     if (envTxt){
       const env = JSON.parse(envTxt);
       S.data = await decryptEnv(env, S.cfg.pass);
-      LS.set("cache", {env, cats:S.cats, rules:S.rules, overrides:S.overrides});
+      LS.set("cache", {env, cats:S.cats, rules:S.rules, overrides:S.overrides, acctNames:S.acctNames});
     } else if (!S.data){
       S.data = {accounts:{}, transactions:[], generated_at:null};
     }
@@ -302,6 +303,14 @@ const allCats = () => [...(S.cats?.income||[]).map(c=>({...c,type:"income"})), .
 const catById = id => allCats().find(c=>c.id===id) || SYS[id] || {id, name:id||"?", icon:"•", color:"#3A3F4B"};
 const esc = s => String(s??"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const reEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function acctName(id){
+  if (S.acctNames[id]) return S.acctNames[id];
+  const a = S.data?.accounts?.[id]; if (!a) return "";
+  const n = a.name || "";
+  for (const k of ["Checking","Savings","Freedom","Sapphire","Amazon","Ink","Slate","United","Southwest","Marriott","Hyatt","IHG"])
+    if (new RegExp("\\b"+k+"\\b","i").test(n)) return k;
+  return n.replace(/^chase\s*/i,"") || a.org || "Account";
+}
 const isTransfer = t => t.category==="transfer";
 const isIncome = t => !isTransfer(t) && t.amount>0 && (catById(t.category).type==="income" || t.category==="uncategorized_in");
 const isExpense = t => !isTransfer(t) && !isIncome(t);   // refunds (+) on expense cats reduce spend
@@ -341,7 +350,7 @@ function txRow(t){
   return `<div class="tx" data-tx="${esc(t.id)}">
     <div class="ic" style="background:${c.color}">${c.icon}</div>
     <div class="mid"><div class="t1">${esc(prettyDesc(t))}${t.pending?'<span class="pill">pending</span>':''}${t.cat_source==="unknown"?'<span class="pill y">review</span>':''}</div>
-      <div class="t2">${esc(c.name)} · ${esc(S.data.accounts[t.account]?.name||"")}</div></div>
+      <div class="t2">${esc(c.name)} · ${esc(acctName(t.account))}</div></div>
     <div class="a num ${t.amount>0?"pos":""}">${fmt(t.amount, true)}</div></div>`;
 }
 function txList(list){
@@ -383,8 +392,8 @@ function viewOverview(){
   if (accounts.length){
     h += `<h3>Accounts</h3><div class="row">`;
     for (const [id,a] of accounts){
-      const nm = (a.name||"").replace(/^(CHASE|Chase)\s*/,"") || a.org;
-      h += `<div class="coin"><div class="ring"><div class="face" style="background:#1F4FB8">🏦</div></div>
+      const nm = acctName(id);
+      h += `<div class="coin" data-acct="${esc(id)}"><div class="ring"><div class="face" style="background:#1F4FB8">🏦</div></div>
         <div class="name">${esc(nm)}</div><div class="amt num ${a.balance<0?"neg":""}">${fmt(a.balance)}</div></div>`;
     }
     h += `</div>`;
@@ -408,7 +417,7 @@ function viewTx(){
   else if (f==="transfer") list = list.filter(isTransfer);
   else if (f!=="all") list = list.filter(t=>t.category===f);
   else list = list.filter(t=>!isTransfer(t));
-  if (q) list = list.filter(t=>(t.description+" "+(t.payee||"")+" "+catById(t.category).name).toLowerCase().includes(q) || String(Math.abs(t.amount)).includes(q));
+  if (q) list = list.filter(t=>(t.description+" "+(t.payee||"")+" "+catById(t.category).name+" "+acctName(t.account)).toLowerCase().includes(q) || String(Math.abs(t.amount)).includes(q));
   const chips = [["all","All"],["review","Needs review"],...allCats().map(c=>[c.id,c.icon+" "+c.name]),["transfer","🔁 Transfers"]];
   return monthHeader() + `<input class="search" id="q" placeholder="Search" value="${esc(S.q)}">
     <div class="chips">${chips.map(([id,l])=>`<button class="chip ${f===id?"on":""}" data-filter="${esc(id)}">${esc(l)}</button>`).join("")}</div>
@@ -482,6 +491,7 @@ $app.addEventListener("click", e=>{
   const ts = t.closest("[data-theme-set]"); if (ts){ LS.set("theme", ts.dataset.themeSet); applyTheme(); return render(); }
   const go = t.closest("[data-goto]"); if (go){ S.tab = go.dataset.goto; S.txFilter="all"; return render(); }
   const f = t.closest("[data-filter]"); if (f){ S.txFilter = f.dataset.filter; return render(); }
+  const ac = t.closest("[data-acct]"); if (ac) return openAcct(ac.dataset.acct);
   const tx = t.closest("[data-tx]"); if (tx) return openTx(tx.dataset.tx);
   const ed = t.closest("[data-edit]"); if (ed) return openCatEditor(ed.dataset.edit);
   const nw = t.closest("[data-new]"); if (nw) return openCatEditor(null, nw.dataset.new);
@@ -514,7 +524,7 @@ function openTx(id){
   const opt = c => `<button class="coin" data-pick="${esc(c.id)}" style="${c.id===cur?"opacity:1":"opacity:.75"}">
       <div class="ring"><div class="face" style="background:${c.color};${c.id===cur?"outline:2px solid var(--text);outline-offset:2px":""}">${c.icon}</div></div><div class="name">${esc(c.name)}</div></button>`;
   openSheet(`<h2 class="num ${t.amount>0?"pos":""}">${fmt(t.amount,true)}</h2>
-    <div class="sub">${esc(t.description)}<br>${txDate(t).toLocaleDateString("en-US",{dateStyle:"medium"})} · ${esc(S.data.accounts[t.account]?.name||"")}${t.pending?" · pending":""}</div>
+    <div class="sub">${esc(t.description)}<br>${txDate(t).toLocaleDateString("en-US",{dateStyle:"medium"})} · ${esc(acctName(t.account))}${t.pending?" · pending":""}</div>
     ${groups.map(g=>`<h3 style="margin-top:6px">${g==="income"?"Income":"Expenses"}</h3><div class="grid">${S.cats[g].map(opt).join("")}</div>`).join("")}
     <h3>Other</h3><div class="grid">${opt(SYS.transfer)}</div>
     <div class="toggle" id="alw"><div><div>Always for this merchant</div><div style="font-size:12px;color:var(--dim)">${esc(t.merchant||"")}</div></div><div class="sw ${always?"on":""}"></div></div>`);
@@ -542,6 +552,20 @@ async function setCategory(t, catId, always){
   }catch(e){ console.warn(e); toast("Couldn’t save — check connection"); }
 }
 
+function openAcct(id){
+  const a = S.data.accounts[id]||{};
+  openSheet(`<h2>Account</h2><div class="sub">${esc(a.name||"")}${a.org? " · "+esc(a.org):""}<br>Balance ${fmt(a.balance||0)}</div>
+    <div class="field"><label>Display name</label><input id="anName" value="${esc(acctName(id))}" maxlength="16"></div>
+    <button class="btn" id="anSave">Save</button>
+    <button class="btn ghost" id="anTx">Show transactions</button>`);
+  $sheet.querySelector("#anTx").onclick = () => { closeSheet(); S.tab="tx"; S.txFilter="all"; S.q=acctName(id); window.scrollTo(0,0); render(); };
+  $sheet.querySelector("#anSave").onclick = async () => {
+    const name = $sheet.querySelector("#anName").value.trim(); closeSheet();
+    if (name) S.acctNames[id]=name; else delete S.acctNames[id]; render();
+    try{ await updateRemote("accounts.json","acctSha", j => { j ||= {}; if (name) j[id]=name; else delete j[id]; S.acctNames=j; return j; }, "account name"); toast("Saved"); }
+    catch(e){ console.warn(e); toast("Couldn’t save — check connection"); }
+  };
+}
 function openCatEditor(id, type){
   const existing = id ? allCats().find(c=>c.id===id) : null;
   type = existing ? existing.type : type;
