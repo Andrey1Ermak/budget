@@ -336,6 +336,10 @@ function acctName(id){
   return n.replace(/^chase\s*/i,"") || a.org || "Account";
 }
 const isTransfer = t => t.category==="transfer";
+// Bank "balance" is the posted (ledger) balance: a pending card payment isn't in it yet.
+// For cash accounts show what the bank calls "available" (includes pending debits).
+const pendingSum = id => (S.data?.transactions||[]).filter(t=>t.account===id && t.pending).reduce((s,t)=>s+t.amount,0);
+const shownBalance = a => (a.available_balance!=null && a.balance>=0) ? a.available_balance : (a.balance||0);
 const isIncome = t => !isTransfer(t) && t.amount>0 && (catById(t.category).type==="income" || t.category==="uncategorized_in");
 const isExpense = t => !isTransfer(t) && !isIncome(t);   // refunds (+) on expense cats reduce spend
 
@@ -418,7 +422,7 @@ function viewOverview(){
     for (const [id,a] of accounts){
       const nm = acctName(id);
       h += `<div class="coin" data-acct="${esc(id)}"><div class="ring"><div class="face" style="background:#1F4FB8">🏦</div></div>
-        <div class="name">${esc(nm)}</div><div class="amt num ${a.balance<0?"neg":""}">${fmt(a.balance)}</div></div>`;
+        <div class="name">${esc(nm)}</div><div class="amt num ${shownBalance(a)<0?"neg":""}">${fmt(shownBalance(a))}</div></div>`;
     }
     h += `</div>`;
   }
@@ -440,7 +444,7 @@ function viewTx(){
   if (f==="review") list = list.filter(t=>t.cat_source==="unknown");
   else if (f==="transfer") list = list.filter(isTransfer);
   else if (f!=="all") list = list.filter(t=>t.category===f);
-  else list = list.filter(t=>!isTransfer(t));
+  else if (!q) list = list.filter(t=>!isTransfer(t));   // a search (e.g. by account) also shows card payments/transfers
   if (q) list = list.filter(t=>(t.description+" "+(t.payee||"")+" "+catById(t.category).name+" "+acctName(t.account)).toLowerCase().includes(q) || String(Math.abs(t.amount)).includes(q));
   const chips = [["all","All"],["review","Needs review"],...allCats().map(c=>[c.id,c.icon+" "+c.name]),["transfer","🔁 Transfers"]];
   return monthHeader() + `<input class="search" id="q" placeholder="Search" value="${esc(S.q)}">
@@ -578,7 +582,7 @@ async function setCategory(t, catId, always){
 
 function openAcct(id){
   const a = S.data.accounts[id]||{};
-  openSheet(`<h2>Account</h2><div class="sub">${esc(a.name||"")}${a.org? " · "+esc(a.org):""}<br>Balance ${fmt(a.balance||0)}</div>
+  openSheet(`<h2>Account</h2><div class="sub">${esc(a.name||"")}${a.org? " · "+esc(a.org):""}<br>${a.available_balance!=null && a.balance>=0 ? `Available ${fmt(a.available_balance)} · ` : ""}Posted balance ${fmt(a.balance||0)}${pendingSum(id)? ` · pending ${fmt(pendingSum(id),true)}`:""}${a.balance_date? `<br>Bank data as of ${new Date(a.balance_date*1000).toLocaleString("en-US",{dateStyle:"medium",timeStyle:"short"})}`:""}</div>
     <div class="field"><label>Display name</label><input id="anName" value="${esc(acctName(id))}" maxlength="16"></div>
     <button class="btn" id="anSave">Save</button>
     <button class="btn ghost" id="anTx">Show transactions</button>`);

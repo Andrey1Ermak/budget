@@ -1,5 +1,5 @@
 // App-shell cache only. Financial data never goes through here (it is fetched from api.github.com).
-const CACHE = "budget-v5";
+const CACHE = "budget-v6";
 const SHELL = ["./", "index.html", "manifest.json", "icon-180.png", "icon-512.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", e => {
