@@ -287,6 +287,26 @@ async function loadAll({silent=false}={}){
   }
   render();
 }
+/* ---- ask the bank via GitHub Actions (push of sync_request.json -> workflow fetches SimpleFIN) ---- */
+const lastFetch = () => { const g = S.data?.fetched_at || S.data?.generated_at; return g ? new Date(g).getTime() : 0; };
+async function requestBankSync({auto=false}={}){
+  const minGap = auto ? 2*3600e3 : 10*60e3;          // keep well under SimpleFIN's daily request limit
+  if (S.bankSyncing || Date.now() - (LS.get("lastReq")||0) < minGap) return;
+  S.bankSyncing = true; LS.set("lastReq", Date.now());
+  const before = lastFetch();
+  try{
+    const cur = await ghJson("sync_request.json");
+    await ghPut("sync_request.json", {at: new Date().toISOString()}, cur.sha, "sync request [fetch]");
+    if (!auto) toast("Asking the bank… ~1–2 min");
+    for (let i=0; i<16; i++){                         // poll up to ~4 min
+      await new Promise(r=>setTimeout(r, 15000));
+      await loadAll({silent:true});
+      if (lastFetch() > before) { if (!auto) toast("Updated from bank"); break; }
+    }
+  }catch(e){ console.warn(e); if (!auto) toast("Bank sync request failed"); }
+  finally{ S.bankSyncing = false; render(); }
+}
+function maybeAutoBankSync(){ if (S.data && Date.now() - lastFetch() > 6*3600e3) requestBankSync({auto:true}); }
 function applyLocalOverrides(){
   if (!S.data) return;
   for (const t of S.data.transactions){
@@ -368,10 +388,10 @@ function txList(list){
   }).join("");
 }
 function monthHeader(){
-  const {y,m} = S.month, gen = S.data?.generated_at ? new Date(S.data.generated_at) : null;
+  const {y,m} = S.month, gen = lastFetch() ? new Date(lastFetch()) : null;
   const ago = gen ? Math.round((Date.now()-gen)/3600000) : null;
   const cls = S.syncState==="err" ? "err" : (ago!==null && ago>30 ? "stale" : "");
-  const label = S.syncState==="loading" ? "Syncing…" : gen ? (ago<1?"Updated just now": ago<24? `Updated ${ago}h ago` : `Updated ${Math.round(ago/24)}d ago`) : "No data yet";
+  const label = (S.syncState==="loading" || S.bankSyncing) ? "Syncing…" : gen ? (ago<1?"Updated just now": ago<24? `Updated ${ago}h ago` : `Updated ${Math.round(ago/24)}d ago`) : "No data yet";
   return `<div class="top">
     <div class="month"><button id="mPrev">‹</button><span>${MONTHS[m]} ${y}</span><button id="mNext">›</button></div>
     <button class="sync ${cls}" id="refresh"><span class="dot"></span>${label}</button></div>`;
@@ -490,7 +510,7 @@ $app.addEventListener("click", e=>{
   const t = e.target;
   if (t.closest("#mPrev")) return shiftMonth(-1);
   if (t.closest("#mNext")) return shiftMonth(1);
-  if (t.closest("#refresh") || t.closest("#runSync")) return loadAll();
+  if (t.closest("#refresh") || t.closest("#runSync")) return loadAll().then(()=>requestBankSync());
   if (t.closest("#logout")) return logout();
   const ts = t.closest("[data-theme-set]"); if (ts){ LS.set("theme", ts.dataset.themeSet); applyTheme(); return render(); }
   const go = t.closest("[data-goto]"); if (go){ S.tab = go.dataset.goto; S.txFilter="all"; return render(); }
@@ -631,8 +651,8 @@ let tt; function toast(m){ const el=document.getElementById("toast"); el.textCon
 (async function boot(){
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
   if (!S.cfg.token || !S.cfg.pass) return viewLock();
-  try{ await loadAll(); }catch(e){ viewLock(e.message==="Wrong password"?"Wrong password":""); }
-  document.addEventListener("visibilitychange", ()=>{ if (!document.hidden && S.data) loadAll({silent:true}); });
+  try{ await loadAll(); maybeAutoBankSync(); }catch(e){ viewLock(e.message==="Wrong password"?"Wrong password":""); }
+  document.addEventListener("visibilitychange", ()=>{ if (!document.hidden && S.data) loadAll({silent:true}).then(maybeAutoBankSync); });
 })();
 </script>
 </body>
